@@ -53,8 +53,13 @@ class RateLimited(Exception):
 
 
 def _parse_env_file(path: Path) -> str:
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    # utf-8-sig: Windows で作られた BOM 付きファイルも読めるようにする
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        line = line.strip().lstrip("﻿")
         if line.startswith("CHATWORK_API_TOKEN="):
             value = line.split("=", 1)[1].strip().strip('"').strip("'")
             if value and value != "ここにトークンを貼り付け":
