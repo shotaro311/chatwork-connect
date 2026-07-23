@@ -1,0 +1,19 @@
+# APIトークン（絶対にコミットしない）
+.env
+*.env
+!.env.example
+
+# 返信ルール（個人設定）
+config/reply-policy.md
+
+# ログ
+logs/
+*.jsonl
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

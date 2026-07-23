@@ -1,0 +1,11 @@
+{
+  "name": "chatwork-connect",
+  "owner": { "name": "shotaro" },
+  "plugins": [
+    {
+      "name": "chatwork-connect",
+      "source": "./",
+      "description": "Chatwork公式API経由で未読確認・承認付き返信・履歴のローカル蓄積を行う。画面自動操作は不使用。"
+    }
+  ]
+}

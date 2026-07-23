@@ -1,0 +1,35 @@
+{
+  "name": "chatwork-connect",
+  "version": "0.1.0",
+  "description": "Chatwork公式API経由で未読確認・承認付き返信・履歴のローカル蓄積を行う。画面自動操作は不使用。",
+  "author": {
+    "name": "Shotaro"
+  },
+  "license": "MIT",
+  "keywords": [
+    "chatwork",
+    "api",
+    "messaging",
+    "automation"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Chatwork Connect",
+    "shortDescription": "Chatworkの未読確認・承認付き返信・履歴蓄積",
+    "longDescription": "Chatwork公式APIを使い、未読メッセージの確認、ユーザー承認後の返信送信、新着メッセージのローカルログ蓄積を行うプラグインです。APIトークンは ~/.config/chatwork-connect/.env に保存し、送信は必ず承認後にのみ実行します。セットアップはSETUP.mdをAIエージェントが読んで進めます。",
+    "developerName": "Shotaro",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "チャットワークの未読を確認して",
+      "このメッセージに返信文を作って",
+      "チャットワークのログを蓄積して",
+      "chatwork-connectのSETUP.mdを読んでセットアップして"
+    ],
+    "brandColor": "#E64C4C"
+  }
+}
