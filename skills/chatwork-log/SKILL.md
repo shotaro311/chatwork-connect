@@ -34,6 +34,48 @@ python3 scripts/chatwork.py archive
 - 各エージェントのスケジュール機能（cron、スケジュールタスク等）で `archive` を定期実行する設定を案内・作成する
 - PCがスリープしていると実行されないことをユーザーに伝える
 
+## 過去ログの一括取り込み（既定はオフ）
+
+導入より前のメッセージをまとめて取り込む機能。**既定でオフになっており、ユーザーが明示的にオンにしたときだけ動く。**
+
+### オンにする前に必ずユーザーへ伝えること
+
+1. **公式ドキュメントに記載のない方法**を使うため、将来動かなくなる可能性がある
+2. 速度制限が厳しく、件数が多いと**数時間かかる**場合がある
+3. **フリープランでは直近40日より前は取得できない**（この機能をオンにしても取れない）
+
+上記を伝え、ユーザーが同意した場合のみオンにする。勝手にオンにしない。
+
+### 手順
+
+```
+# 現在の設定を確認
+python3 scripts/chatwork.py config
+
+# オンにする（ユーザーの同意後）
+python3 scripts/chatwork.py config --set history_import=on
+
+# 取り込み実行
+python3 scripts/chatwork.py import-history                      # 全ルーム・全期間
+python3 scripts/chatwork.py import-history --days 30            # 直近30日ぶんだけ保存
+python3 scripts/chatwork.py import-history --rooms 123456       # 特定ルームだけ
+python3 scripts/chatwork.py import-history --max-requests 50    # 1回の実行を短く区切る
+
+# 終わったらオフに戻す（推奨）
+python3 scripts/chatwork.py config --set history_import=off
+```
+
+### 中断と再開
+
+- 速度制限に達すると自動的に中断し、そこまでの進捗を保存する
+- **同じコマンドを再実行すると続きから再開する**（`import-state.json` に位置を記録）
+- 初回は `--max-requests 20` 程度から試し、動作を確認してから増やすとよい
+
+### 失敗した場合
+
+`saved: 0` かつ `completed: true` が全ルームで返る場合、そのアカウントでは過去ログを取得できない。
+フリープランの40日制限、または仕様変更の可能性がある。ユーザーにプランを確認し、無理に繰り返さない。
+
 ## 蓄積したログの使い方
 
 - 「◯◯さんと最近どんなやり取りをした?」→ 該当ルームのJSONLを読んで要約する

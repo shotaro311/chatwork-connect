@@ -37,6 +37,20 @@ DATA_DIR = Path(os.environ.get("CHATWORK_DATA_DIR", "")) if os.environ.get("CHAT
 ARCHIVE_ROOM_CAP = 80        # 1回のarchiveで巡回する最大ルーム数（利用回数制限対策）
 ARCHIVE_SLEEP_SEC = 0.3      # ルーム間の待機
 
+SETTINGS_PATH = DATA_DIR / "settings.json"
+IMPORT_STATE_PATH = DATA_DIR / "import-state.json"
+DEFAULT_SETTINGS = {
+    # 過去ログの一括取り込み。既定はオフ。
+    # 公式ドキュメントに無いパラメータを使うため、利用者が明示的にオンにしたときだけ動く。
+    "history_import": False,
+}
+IMPORT_SLEEP_SEC = 6.0       # 取り込み時のリクエスト間隔（速度制限対策）
+IMPORT_MAX_REQUESTS = 200    # 1回の実行での最大リクエスト数（既定）
+
+
+class RateLimited(Exception):
+    """429（利用回数制限）。呼び出し側で中断・再開の判断に使う。"""
+
 
 def _parse_env_file(path: Path) -> str:
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -84,11 +98,35 @@ def request(method: str, path: str, params: dict | None = None):
         if e.code == 401:
             sys.exit("ERROR: 認証エラー(401)。APIトークンが正しいか確認してください。")
         if e.code == 429:
-            sys.exit("ERROR: 利用回数制限(429)。5分ほど待ってから再実行してください。")
+            raise RateLimited("利用回数制限(429)")
         detail = e.read().decode("utf-8", "replace")
         sys.exit(f"ERROR: HTTP {e.code}: {detail}")
     except urllib.error.URLError as e:
         sys.exit(f"ERROR: 接続に失敗しました（ネットワークを確認してください）: {e.reason}")
+
+
+def load_settings() -> dict:
+    s = dict(DEFAULT_SETTINGS)
+    if SETTINGS_PATH.exists():
+        try:
+            s.update(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            print(f"警告: {SETTINGS_PATH} を読めませんでした。既定値を使います。", file=sys.stderr)
+    return s
+
+
+def save_settings(s: dict) -> None:
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(s, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _to_bool(value: str) -> bool:
+    v = value.strip().lower()
+    if v in ("on", "true", "yes", "1", "オン"):
+        return True
+    if v in ("off", "false", "no", "0", "オフ"):
+        return False
+    sys.exit(f"ERROR: on / off のどちらかを指定してください（受け取った値: {value}）")
 
 
 def fmt_time(epoch: int) -> str:
@@ -235,6 +273,143 @@ def cmd_archive(args) -> None:
     print(f"\nOK: {len(rooms)}ルームを確認し、{total_new}件を新規保存しました。", file=sys.stderr)
 
 
+def cmd_config(args) -> None:
+    s = load_settings()
+    if args.set:
+        if "=" not in args.set:
+            sys.exit("ERROR: --set は key=value の形式で指定してください（例: history_import=on）")
+        key, value = args.set.split("=", 1)
+        key = key.strip()
+        if key not in DEFAULT_SETTINGS:
+            sys.exit(f"ERROR: 不明な設定項目です: {key}（指定可能: {', '.join(DEFAULT_SETTINGS)}）")
+        s[key] = _to_bool(value)
+        save_settings(s)
+        state = "オン" if s[key] else "オフ"
+        print(f"OK: {key} を {state} にしました。", file=sys.stderr)
+    out({k: ("on" if v else "off") if isinstance(v, bool) else v for k, v in s.items()})
+
+
+def _load_import_state() -> dict:
+    if IMPORT_STATE_PATH.exists():
+        try:
+            return json.loads(IMPORT_STATE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _save_import_state(state: dict) -> None:
+    IMPORT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    IMPORT_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                                 encoding="utf-8")
+
+
+def cmd_import_history(args) -> None:
+    """過去ログの一括取り込み（既定はオフ）。
+
+    公式ドキュメントに記載のない message_id パラメータでページ送りする。
+    公式仕様ではないため、将来動かなくなる可能性がある。
+    速度制限が厳しいため、途中で止まっても再実行で続きから再開できる。
+    """
+    settings = load_settings()
+    if not settings.get("history_import"):
+        sys.exit(
+            "過去ログの一括取り込みは、既定でオフになっています。\n"
+            "\n"
+            "  この機能は、チャットワークの公式ドキュメントに記載のない方法を使います。\n"
+            "  将来動かなくなる可能性があること、取り込みに数時間かかる場合があることを\n"
+            "  ご承知のうえで、オンにしてください。\n"
+            "\n"
+            "  オンにする:  python3 scripts/chatwork.py config --set history_import=on\n"
+            "  オフに戻す:  python3 scripts/chatwork.py config --set history_import=off"
+        )
+
+    logs_dir = DATA_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    state = _load_import_state()
+    cutoff = time.time() - args.days * 86400 if args.days else None
+
+    rooms = request("GET", "/rooms") or []
+    if args.rooms:
+        wanted = {s.strip() for s in args.rooms.split(",")}
+        rooms = [r for r in rooms if str(r.get("room_id")) in wanted]
+    if not rooms:
+        sys.exit("ERROR: 対象のルームが見つかりませんでした。")
+
+    print(f"{len(rooms)}ルームを対象に取り込みます。"
+          f"（間隔{IMPORT_SLEEP_SEC}秒・最大{args.max_requests}リクエスト）", file=sys.stderr)
+    if cutoff:
+        print(f"直近{args.days}日以内のメッセージのみ保存します。", file=sys.stderr)
+
+    requests_used = 0
+    summary = []
+    interrupted = False
+
+    for r in rooms:
+        room_id = str(r.get("room_id"))
+        log_path = logs_dir / f"{room_id}.jsonl"
+        known_ids = _load_logged_ids(log_path)
+        cursor = state.get(room_id, "0")
+        saved = 0
+        done = False
+
+        while requests_used < args.max_requests:
+            try:
+                batch = request("GET", f"/rooms/{room_id}/messages",
+                                {"force": 1, "message_id": cursor})
+            except RateLimited:
+                print(f"  制限に達したため中断します（{r.get('name')}）。"
+                      f"しばらく待って再実行すると続きから再開します。", file=sys.stderr)
+                interrupted = True
+                break
+            requests_used += 1
+
+            if not batch:
+                done = True
+                break
+
+            new_cursor = str(batch[-1].get("message_id"))
+            if new_cursor == cursor:
+                done = True   # 進まなくなったら終了（これ以上遡れない）
+                break
+
+            fresh = [m for m in batch if m.get("message_id") not in known_ids]
+            if cutoff:
+                fresh = [m for m in fresh if m.get("send_time", 0) >= cutoff]
+            if fresh:
+                fresh.sort(key=lambda m: m.get("send_time", 0))
+                with log_path.open("a", encoding="utf-8") as f:
+                    for m in fresh:
+                        f.write(json.dumps(simplify_message(m, int(room_id)),
+                                           ensure_ascii=False) + "\n")
+                        known_ids.add(m.get("message_id"))
+                saved += len(fresh)
+
+            cursor = new_cursor
+            state[room_id] = cursor
+            _save_import_state(state)
+            print(f"  {r.get('name')}: {saved}件保存 "
+                  f"（{requests_used}/{args.max_requests}リクエスト）", file=sys.stderr)
+            time.sleep(IMPORT_SLEEP_SEC)
+
+        summary.append({"room_id": int(room_id), "name": r.get("name"),
+                        "saved": saved, "completed": done})
+        if interrupted or requests_used >= args.max_requests:
+            break
+
+    out({
+        "requests_used": requests_used,
+        "total_saved": sum(s["saved"] for s in summary),
+        "rooms": summary,
+        "interrupted": interrupted or requests_used >= args.max_requests,
+        "log_dir": str(logs_dir),
+    })
+    if interrupted or requests_used >= args.max_requests:
+        print("\n途中で終了しました。同じコマンドを再実行すると続きから再開します。", file=sys.stderr)
+    else:
+        print("\nOK: 取り込みが完了しました。", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chatwork API CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -264,8 +439,22 @@ def main() -> None:
     p_arch.add_argument("--rooms", help="対象ルームIDをカンマ区切りで指定（省略時は全ルーム）")
     p_arch.set_defaults(func=cmd_archive)
 
+    p_conf = sub.add_parser("config", help="設定の確認・変更")
+    p_conf.add_argument("--set", help="設定を変更（例: history_import=on）")
+    p_conf.set_defaults(func=cmd_config)
+
+    p_imp = sub.add_parser("import-history", help="過去ログの一括取り込み（既定はオフ）")
+    p_imp.add_argument("--rooms", help="対象ルームIDをカンマ区切りで指定（省略時は全ルーム）")
+    p_imp.add_argument("--days", type=int, help="直近N日以内のメッセージのみ保存（省略時は全期間）")
+    p_imp.add_argument("--max-requests", type=int, default=IMPORT_MAX_REQUESTS,
+                       help=f"1回の実行での最大リクエスト数（既定: {IMPORT_MAX_REQUESTS}）")
+    p_imp.set_defaults(func=cmd_import_history)
+
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except RateLimited:
+        sys.exit("ERROR: 利用回数制限(429)。5分ほど待ってから再実行してください。")
 
 
 if __name__ == "__main__":

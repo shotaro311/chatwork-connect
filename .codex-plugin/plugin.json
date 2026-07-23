@@ -1,6 +1,6 @@
 {
   "name": "chatwork-connect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Chatwork公式API経由で未読確認・承認付き返信・履歴のローカル蓄積を行う。画面自動操作は不使用。",
   "author": {
     "name": "Shotaro"
